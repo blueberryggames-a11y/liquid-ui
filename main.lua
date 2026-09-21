@@ -8,7 +8,7 @@ local LocalPlayer = Players.LocalPlayer
 
 local LiquidUI = {}
 LiquidUI.__index = LiquidUI
-LiquidUI.Version = "2.0.0"
+LiquidUI.Version = "2.1.0"
 
 LiquidUI.Theme = {
 	Background = Color3.fromRGB(15,16,20),
@@ -27,6 +27,10 @@ LiquidUI.Theme = {
 	Yellow = Color3.fromRGB(246,196,68),
 	White = Color3.fromRGB(255,255,255)
 }
+
+--// ---------------------------------------------------------------------
+--// Generic helpers
+--// ---------------------------------------------------------------------
 
 local function New(class,props,parent)
 	local object = Instance.new(class)
@@ -61,7 +65,7 @@ local function Padding(object,left,right,top,bottom)
 end
 
 local function Tween(object,properties,duration)
-	return TweenService:Create(
+	local tween = TweenService:Create(
 		object,
 		TweenInfo.new(
 			duration or .16,
@@ -70,25 +74,45 @@ local function Tween(object,properties,duration)
 		),
 		properties
 	)
+	tween:Play()
+	return tween
 end
 
 local function protectGui(gui)
+	local protected = false
+
 	pcall(function()
 		if syn and syn.protect_gui then
 			syn.protect_gui(gui)
-		elseif gethui then
-			gui.Parent = gethui()
-			return
+			protected = true
 		end
 	end)
 
-	gui.Parent = CoreGui
+	pcall(function()
+		if not protected and gethui then
+			gui.Parent = gethui()
+			protected = true
+		end
+	end)
+
+	if not protected then
+		gui.Parent = CoreGui
+	end
 end
 
-local function getIconModule()
-	-- LiquidUI intentionally does not require a local WindUI IconModule.
-	-- It downloads the icon data directly from the public Footagesus/Icons
-	-- repository when available.
+--// ---------------------------------------------------------------------
+--// Icons -- loaded asynchronously so the window never blocks (or breaks)
+--// waiting on a network request. Anything that requests an icon before
+--// the data has arrived gets a themed placeholder that is swapped for
+--// the real icon the moment (if ever) the fetch succeeds.
+--// ---------------------------------------------------------------------
+
+local IconData = nil
+local IconLoadAttempted = false
+local IconLoadFinished = false
+local PendingIconRequests = {} -- {imageLabel=ImageLabel, name=string, color=Color3}
+
+local function fetchIconModule()
 	local urls = {
 		"https://raw.githubusercontent.com/Footagesus/Icons/refs/heads/main/lucide/dist/Icons.lua",
 		"https://raw.githubusercontent.com/Footagesus/Icons/main/lucide/dist/Icons.lua"
@@ -117,10 +141,8 @@ local function getIconModule()
 	return nil
 end
 
-local IconData = getIconModule()
-
 local function resolveIcon(name)
-	if not name or name == "" then
+	if not name or name == "" or type(IconData) ~= "table" then
 		return nil
 	end
 
@@ -129,10 +151,6 @@ local function resolveIcon(name)
 	iconName = iconName or tostring(name)
 
 	if iconType ~= "lucide" then
-		return nil
-	end
-
-	if type(IconData) ~= "table" then
 		return nil
 	end
 
@@ -167,31 +185,91 @@ local function resolveIcon(name)
 	return nil
 end
 
-local function createIcon(parent,name,size,color)
+local function applyIconData(imageLabel,name,color)
 	local data = resolveIcon(name)
 	if not data or not data.Image then
+		return false
+	end
+
+	imageLabel.Image = data.Image
+	imageLabel.ImageColor3 = color or LiquidUI.Theme.SubText
+
+	if data.ImageRectSize and data.ImageRectSize.X > 0 then
+		imageLabel.ImageRectSize = data.ImageRectSize
+		imageLabel.ImageRectOffset = data.ImageRectPosition or Vector2.zero
+	end
+
+	-- Hide the placeholder dot behind it, if any.
+	local dot = imageLabel:FindFirstChild("__Placeholder")
+	if dot then
+		dot.Visible = false
+	end
+
+	return true
+end
+
+local function beginIconLoad()
+	if IconLoadAttempted then
+		return
+	end
+	IconLoadAttempted = true
+
+	task.spawn(function()
+		IconData = fetchIconModule()
+		IconLoadFinished = true
+
+		for _,request in ipairs(PendingIconRequests) do
+			if request.imageLabel and request.imageLabel.Parent then
+				applyIconData(request.imageLabel,request.name,request.color)
+			end
+		end
+		PendingIconRequests = {}
+	end)
+end
+
+-- Creates an icon slot immediately (with a small themed placeholder dot),
+-- and upgrades it to the real vector icon once/if the icon pack loads.
+local function createIcon(parent,name,size,color)
+	if not name or name == "" then
 		return nil
 	end
 
+	beginIconLoad()
+
+	size = size or 18
+	color = color or LiquidUI.Theme.SubText
+
 	local image = New("ImageLabel",{
 		BackgroundTransparency = 1,
-		Size = UDim2.fromOffset(size or 18,size or 18),
-		Image = data.Image,
-		ImageColor3 = color or LiquidUI.Theme.SubText,
+		Size = UDim2.fromOffset(size,size),
+		Image = "",
+		ImageColor3 = color,
 		ScaleType = Enum.ScaleType.Fit
 	},parent)
 
-	if data.ImageRectSize and data.ImageRectSize.X > 0 then
-		image.ImageRectSize = data.ImageRectSize
-		image.ImageRectOffset = data.ImageRectPosition or Vector2.zero
+	local placeholder = New("Frame",{
+		Name = "__Placeholder",
+		Size = UDim2.fromScale(.5,.5),
+		AnchorPoint = Vector2.new(.5,.5),
+		Position = UDim2.fromScale(.5,.5),
+		BackgroundColor3 = color,
+		BackgroundTransparency = .35,
+		BorderSizePixel = 0
+	},image)
+	Corner(placeholder,100)
+
+	if IconLoadFinished then
+		applyIconData(image,name,color)
+	elseif type(IconData) == "table" then
+		applyIconData(image,name,color)
+	else
+		table.insert(PendingIconRequests,{imageLabel=image,name=name,color=color})
 	end
 
 	return image
 end
 
 local function createShadow(parent)
-	-- A real soft shadow: ImageLabel + ScaleType.Slice.
-	-- Replace ShadowImage in config if you want your own shadow asset.
 	local shadow = New("ImageLabel",{
 		Name = "Shadow",
 		BackgroundTransparency = 1,
@@ -206,6 +284,10 @@ local function createShadow(parent)
 	},parent)
 	return shadow
 end
+
+--// ---------------------------------------------------------------------
+--// Window
+--// ---------------------------------------------------------------------
 
 function LiquidUI:CreateWindow(config)
 	config = config or {}
@@ -222,6 +304,7 @@ function LiquidUI:CreateWindow(config)
 	self.Tabs = {}
 	self.ActiveTab = nil
 	self.Visible = true
+	self.SidebarCollapsed = false
 	self.Connections = {}
 	self.Destroyed = false
 
@@ -261,7 +344,7 @@ function LiquidUI:CreateWindow(config)
 		ClipsDescendants = true,
 		ZIndex = 2
 	},self.Container)
-	Corner(self.Window,20)
+	Corner(self.Window,16)
 	Stroke(self.Window,.88,1)
 
 	New("UIGradient",{
@@ -277,6 +360,8 @@ function LiquidUI:CreateWindow(config)
 		MinSize = self.MinSize,
 		MaxSize = self.MaxSize
 	},self.Container)
+
+	-- Topbar ---------------------------------------------------------
 
 	self.Topbar = New("Frame",{
 		Name = "Topbar",
@@ -309,37 +394,39 @@ function LiquidUI:CreateWindow(config)
 
 	New("TextLabel",{
 		Position = UDim2.fromOffset(64,10),
-		Size = UDim2.new(1,-230,0,22),
+		Size = UDim2.new(1,-260,0,22),
 		BackgroundTransparency = 1,
 		Text = self.Title,
 		TextColor3 = LiquidUI.Theme.Text,
 		TextSize = 14,
 		Font = Enum.Font.GothamBold,
 		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
 		ZIndex = 6
 	},self.Topbar)
 
 	New("TextLabel",{
 		Position = UDim2.fromOffset(64,32),
-		Size = UDim2.new(1,-230,0,16),
+		Size = UDim2.new(1,-260,0,16),
 		BackgroundTransparency = 1,
 		Text = self.Subtitle,
 		TextColor3 = LiquidUI.Theme.SubText,
 		TextSize = 9,
 		Font = Enum.Font.Gotham,
 		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
 		ZIndex = 6
 	},self.Topbar)
 
 	local controls = New("Frame",{
 		AnchorPoint = Vector2.new(1,.5),
 		Position = UDim2.new(1,-12,.5,0),
-		Size = UDim2.fromOffset(126,38),
+		Size = UDim2.fromOffset(37*5+5*4,38),
 		BackgroundTransparency = 1,
 		ZIndex = 8
 	},self.Topbar)
 
-	local controlLayout = New("UIListLayout",{
+	New("UIListLayout",{
 		FillDirection = Enum.FillDirection.Horizontal,
 		HorizontalAlignment = Enum.HorizontalAlignment.Right,
 		VerticalAlignment = Enum.VerticalAlignment.Center,
@@ -369,9 +456,9 @@ function LiquidUI:CreateWindow(config)
 			Tween(button,{
 				BackgroundColor3 = LiquidUI.Theme.SurfaceHover,
 				BackgroundTransparency = 0
-			}):Play()
+			})
 			if iconObject then
-				Tween(iconObject,{ImageColor3=LiquidUI.Theme.Text}):Play()
+				Tween(iconObject,{ImageColor3=LiquidUI.Theme.Text})
 			end
 		end)
 
@@ -379,9 +466,9 @@ function LiquidUI:CreateWindow(config)
 			Tween(button,{
 				BackgroundColor3 = LiquidUI.Theme.Surface,
 				BackgroundTransparency = .35
-			}):Play()
+			})
 			if iconObject then
-				Tween(iconObject,{ImageColor3=LiquidUI.Theme.SubText}):Play()
+				Tween(iconObject,{ImageColor3=LiquidUI.Theme.SubText})
 			end
 		end)
 
@@ -389,8 +476,18 @@ function LiquidUI:CreateWindow(config)
 		return button
 	end
 
-	windowControl("lucide:minimize-2",function()
+	windowControl("lucide:settings",function()
+		if self.SettingsCallback then
+			task.spawn(self.SettingsCallback)
+		end
+	end)
+
+	windowControl("lucide:minus",function()
 		self:SetVisible(false)
+	end)
+
+	windowControl("lucide:panel-left",function()
+		self:ToggleSidebar()
 	end)
 
 	windowControl("lucide:maximize-2",function()
@@ -401,6 +498,8 @@ function LiquidUI:CreateWindow(config)
 		self:Destroy()
 	end)
 
+	-- Sidebar ----------------------------------------------------------
+
 	self.Sidebar = New("Frame",{
 		Name = "Sidebar",
 		Position = UDim2.fromOffset(0,62),
@@ -408,6 +507,7 @@ function LiquidUI:CreateWindow(config)
 		BackgroundColor3 = LiquidUI.Theme.Sidebar,
 		BackgroundTransparency = .06,
 		BorderSizePixel = 0,
+		ClipsDescendants = true,
 		ZIndex = 4
 	},self.Window)
 
@@ -472,6 +572,8 @@ function LiquidUI:CreateWindow(config)
 			0,self.TabLayout.AbsoluteContentSize.Y+10
 		)
 	end)
+
+	-- Content ------------------------------------------------------
 
 	self.Content = New("Frame",{
 		Name = "Content",
@@ -616,6 +718,24 @@ function LiquidUI:ToggleMaximize()
 	self.Maximized = true
 end
 
+function LiquidUI:ToggleSidebar()
+	self.SidebarCollapsed = not self.SidebarCollapsed
+
+	if self.SidebarCollapsed then
+		Tween(self.Sidebar,{Size=UDim2.new(0,0,1,-62)},.18)
+		Tween(self.Content,{
+			Position = UDim2.fromOffset(0,62),
+			Size = UDim2.new(1,0,1,-62)
+		},.18)
+	else
+		Tween(self.Sidebar,{Size=UDim2.new(0,220,1,-62)},.18)
+		Tween(self.Content,{
+			Position = UDim2.fromOffset(220,62),
+			Size = UDim2.new(1,-220,1,-62)
+		},.18)
+	end
+end
+
 function LiquidUI:SetVisible(value)
 	self.Visible = value
 	self.Container.Visible = value
@@ -648,6 +768,67 @@ function LiquidUI:FilterTabs(query)
 	end
 end
 
+--// Rebuilds the sidebar's category headers + ordering. Tabs marked as
+--// Favorite are pulled into their own section up top (mirrors the
+--// reference design), everything else is grouped under its Category.
+function LiquidUI:RebuildSidebar()
+	for _,child in ipairs(self.TabScroll:GetChildren()) do
+		if child.Name == "__SidebarHeader" then
+			child:Destroy()
+		end
+	end
+
+	local order = 0
+
+	local function addHeader(text)
+		order += 1
+		New("TextLabel",{
+			Name = "__SidebarHeader",
+			Size = UDim2.new(1,0,0,22),
+			BackgroundTransparency = 1,
+			Text = string.upper(text),
+			TextColor3 = LiquidUI.Theme.Muted,
+			TextSize = 9,
+			Font = Enum.Font.GothamBold,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			LayoutOrder = order
+		},self.TabScroll)
+	end
+
+	local favorites = {}
+	local categories = {}
+	local categoryOrder = {}
+
+	for _,tab in ipairs(self.Tabs) do
+		if tab.Favorite then
+			table.insert(favorites,tab)
+		else
+			local cat = tab.Category or "General"
+			if not categories[cat] then
+				categories[cat] = {}
+				table.insert(categoryOrder,cat)
+			end
+			table.insert(categories[cat],tab)
+		end
+	end
+
+	if #favorites > 0 then
+		addHeader("Favorite")
+		for _,tab in ipairs(favorites) do
+			order += 1
+			tab.Button.LayoutOrder = order
+		end
+	end
+
+	for _,cat in ipairs(categoryOrder) do
+		addHeader(cat)
+		for _,tab in ipairs(categories[cat]) do
+			order += 1
+			tab.Button.LayoutOrder = order
+		end
+	end
+end
+
 function LiquidUI:SelectTab(tab)
 	if type(tab) == "string" then
 		for _,candidate in ipairs(self.Tabs) do
@@ -672,21 +853,21 @@ function LiquidUI:SelectTab(tab)
 				and LiquidUI.Theme.SurfaceHover
 				or LiquidUI.Theme.Surface,
 			BackgroundTransparency = active and .05 or 1
-		}):Play()
+		})
 
 		if candidate.IconObject then
 			Tween(candidate.IconObject,{
 				ImageColor3 = active
 					and LiquidUI.Theme.AccentBright
 					or LiquidUI.Theme.SubText
-			}):Play()
+			})
 		end
 
 		Tween(candidate.Label,{
 			TextColor3 = active
 				and LiquidUI.Theme.Text
 				or LiquidUI.Theme.SubText
-		}):Play()
+		})
 	end
 
 	for _,child in ipairs(self.ContentScroll:GetChildren()) do
@@ -701,15 +882,22 @@ end
 function LiquidUI:CreateTab(config)
 	config = config or {}
 
-	local tab = {}
+	-- IMPORTANT: the metatable is attached immediately, not at the end of
+	-- this function, so tab:Render() (called by SelectTab below, for the
+	-- very first tab) is guaranteed to exist. This is what the
+	-- "attempt to call missing method 'Render'" error was caused by.
+	local tab = setmetatable({},{__index=LiquidUI.Tab})
+
 	tab.Window = self
 	tab.Name = config.Name or "Tab"
 	tab.Icon = config.Icon
 	tab.Description = config.Description or ""
+	tab.Category = config.Category or "General"
+	tab.Favorite = config.Favorite == true
 	tab.Elements = {}
 
 	local button = New("TextButton",{
-		Size = UDim2.new(1,0,0,40),
+		Size = UDim2.new(1,0,0,38),
 		BackgroundColor3 = LiquidUI.Theme.Surface,
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
@@ -722,7 +910,7 @@ function LiquidUI:CreateTab(config)
 	local icon = createIcon(
 		button,
 		tab.Icon,
-		17,
+		16,
 		LiquidUI.Theme.SubText
 	)
 
@@ -731,38 +919,72 @@ function LiquidUI:CreateTab(config)
 	end
 
 	local label = New("TextLabel",{
-		Position = UDim2.fromOffset(icon and 38 or 13,0),
-		Size = UDim2.new(1,-48,1,0),
+		Position = UDim2.fromOffset(icon and 37 or 13,0),
+		Size = UDim2.new(1,-70,1,0),
 		BackgroundTransparency = 1,
 		Text = tab.Name,
 		TextColor3 = LiquidUI.Theme.SubText,
 		TextSize = 11,
 		Font = Enum.Font.GothamMedium,
 		TextXAlignment = Enum.TextXAlignment.Left,
+		TextTruncate = Enum.TextTruncate.AtEnd,
 		ZIndex = 7
 	},button)
+
+	-- Favorite star toggle. This is its own TextButton so clicking it
+	-- doesn't also trigger the tab-select click behind it.
+	local star = New("TextButton",{
+		AnchorPoint = Vector2.new(1,.5),
+		Position = UDim2.new(1,-9,.5,0),
+		Size = UDim2.fromOffset(20,20),
+		BackgroundTransparency = 1,
+		Text = "",
+		AutoButtonColor = false,
+		ZIndex = 8
+	},button)
+
+	local starIcon = createIcon(
+		star,
+		"lucide:star",
+		14,
+		tab.Favorite and LiquidUI.Theme.Yellow or LiquidUI.Theme.Muted
+	)
+	if starIcon then
+		starIcon.AnchorPoint = Vector2.new(.5,.5)
+		starIcon.Position = UDim2.fromScale(.5,.5)
+	end
+
+	star.MouseButton1Click:Connect(function()
+		tab.Favorite = not tab.Favorite
+		if starIcon then
+			Tween(starIcon,{
+				ImageColor3 = tab.Favorite
+					and LiquidUI.Theme.Yellow
+					or LiquidUI.Theme.Muted
+			},.12)
+		end
+		self:RebuildSidebar()
+	end)
 
 	button.MouseEnter:Connect(function()
 		if self.ActiveTab ~= tab then
 			Tween(button,{
 				BackgroundColor3 = LiquidUI.Theme.SurfaceHover,
 				BackgroundTransparency = .72
-			}):Play()
-			Tween(label,{TextColor3=LiquidUI.Theme.Text}):Play()
+			})
+			Tween(label,{TextColor3=LiquidUI.Theme.Text})
 			if icon then
-				Tween(icon,{ImageColor3=LiquidUI.Theme.Text}):Play()
+				Tween(icon,{ImageColor3=LiquidUI.Theme.Text})
 			end
 		end
 	end)
 
 	button.MouseLeave:Connect(function()
 		if self.ActiveTab ~= tab then
-			Tween(button,{
-				BackgroundTransparency = 1
-			}):Play()
-			Tween(label,{TextColor3=LiquidUI.Theme.SubText}):Play()
+			Tween(button,{BackgroundTransparency=1})
+			Tween(label,{TextColor3=LiquidUI.Theme.SubText})
 			if icon then
-				Tween(icon,{ImageColor3=LiquidUI.Theme.SubText}):Play()
+				Tween(icon,{ImageColor3=LiquidUI.Theme.SubText})
 			end
 		end
 	end)
@@ -774,15 +996,22 @@ function LiquidUI:CreateTab(config)
 	tab.Button = button
 	tab.IconObject = icon
 	tab.Label = label
+	tab.StarButton = star
+	tab.StarIcon = starIcon
 
 	table.insert(self.Tabs,tab)
+	self:RebuildSidebar()
 
 	if not self.ActiveTab then
 		self:SelectTab(tab)
 	end
 
-	return setmetatable(tab,{__index=LiquidUI.Tab})
+	return tab
 end
+
+--// ---------------------------------------------------------------------
+--// Tab / element builders
+--// ---------------------------------------------------------------------
 
 LiquidUI.Tab = {}
 
@@ -820,7 +1049,20 @@ end
 
 function LiquidUI.Tab:SetDescription(text)
 	self.Description = text or ""
-	self.Window:SelectTab(self)
+	if self.Window.ActiveTab == self then
+		self.Window:SelectTab(self)
+	end
+	return self
+end
+
+function LiquidUI.Tab:SetFavorite(value)
+	self.Favorite = value == true
+	if self.StarIcon then
+		self.StarIcon.ImageColor3 = self.Favorite
+			and LiquidUI.Theme.Yellow
+			or LiquidUI.Theme.Muted
+	end
+	self.Window:RebuildSidebar()
 	return self
 end
 
@@ -865,7 +1107,7 @@ function LiquidUI.Tab:CreateButton(config)
 			icon.Position = UDim2.fromOffset(13,13)
 		end
 
-		local label = New("TextLabel",{
+		New("TextLabel",{
 			Position = UDim2.fromOffset(icon and 43 or 14,0),
 			Size = UDim2.new(1,-85,1,0),
 			BackgroundTransparency = 1,
@@ -891,15 +1133,11 @@ function LiquidUI.Tab:CreateButton(config)
 		end
 
 		button.MouseEnter:Connect(function()
-			Tween(button,{
-				BackgroundColor3 = LiquidUI.Theme.SurfaceHover
-			}):Play()
+			Tween(button,{BackgroundColor3=LiquidUI.Theme.SurfaceHover})
 		end)
 
 		button.MouseLeave:Connect(function()
-			Tween(button,{
-				BackgroundColor3 = LiquidUI.Theme.Surface
-			}):Play()
+			Tween(button,{BackgroundColor3=LiquidUI.Theme.Surface})
 		end)
 
 		button.MouseButton1Click:Connect(function()
@@ -907,6 +1145,114 @@ function LiquidUI.Tab:CreateButton(config)
 				task.spawn(config.Callback)
 			end
 		end)
+	end)
+
+	return self
+end
+
+--// A row of compact "quick access" buttons that evenly split the
+--// available width -- this is the {icon, colored bold text, KEY pill}
+--// style used for grouped actions (Kill / Heal / Explode / Fling, etc).
+--// Pass a single item to get a full-width button (like "RoSandbox Tools").
+--//
+--//   tab:CreateButtonRow({
+--//       {Name="Kill", Icon="lucide:skull", Color=Theme.Red, Key="K", Callback=...},
+--//       {Name="Heal", Icon="lucide:heart-pulse", Color=Theme.Green, Key="H", Callback=...},
+--//   })
+function LiquidUI.Tab:CreateButtonRow(items)
+	items = items or {}
+	if #items == 0 then
+		return self
+	end
+
+	table.insert(self.Elements,function()
+		local gap = 10
+		local count = #items
+
+		local row = New("Frame",{
+			Size = UDim2.new(1,-5,0,52),
+			BackgroundTransparency = 1
+		},self.Window.ContentScroll)
+
+		New("UIListLayout",{
+			FillDirection = Enum.FillDirection.Horizontal,
+			Padding = UDim.new(0,gap),
+			SortOrder = Enum.SortOrder.LayoutOrder
+		},row)
+
+		for index,item in ipairs(items) do
+			local cellWidth = (1/count)
+			local cellOffset = -(gap*(count-1)/count)
+
+			local button = New("TextButton",{
+				Size = UDim2.new(cellWidth,cellOffset,1,0),
+				BackgroundColor3 = LiquidUI.Theme.Surface,
+				BackgroundTransparency = .04,
+				BorderSizePixel = 0,
+				Text = "",
+				AutoButtonColor = false,
+				LayoutOrder = index
+			},row)
+			Corner(button,11)
+			Stroke(button,.93,1)
+
+			local color = item.Color or LiquidUI.Theme.AccentBright
+
+			local iconHolder = New("Frame",{
+				Position = UDim2.fromOffset(11,11),
+				Size = UDim2.fromOffset(30,30),
+				BackgroundColor3 = color,
+				BackgroundTransparency = .84,
+				BorderSizePixel = 0
+			},button)
+			Corner(iconHolder,9)
+
+			local icon = createIcon(iconHolder,item.Icon,16,color)
+			if icon then
+				icon.AnchorPoint = Vector2.new(.5,.5)
+				icon.Position = UDim2.fromScale(.5,.5)
+			end
+
+			New("TextLabel",{
+				Position = UDim2.fromOffset(49,0),
+				Size = UDim2.new(1,item.Key and -85 or -58,1,0),
+				BackgroundTransparency = 1,
+				Text = item.Name or "Action",
+				TextColor3 = color,
+				TextSize = 11,
+				Font = Enum.Font.GothamBold,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextTruncate = Enum.TextTruncate.AtEnd
+			},button)
+
+			if item.Key then
+				New("TextLabel",{
+					AnchorPoint = Vector2.new(1,.5),
+					Position = UDim2.new(1,-11,.5,0),
+					Size = UDim2.fromOffset(34,20),
+					BackgroundColor3 = LiquidUI.Theme.Background,
+					BackgroundTransparency = .2,
+					Text = tostring(item.Key),
+					TextColor3 = LiquidUI.Theme.Muted,
+					TextSize = 8,
+					Font = Enum.Font.GothamMedium
+				},button)
+			end
+
+			button.MouseEnter:Connect(function()
+				Tween(button,{BackgroundColor3=LiquidUI.Theme.SurfaceHover})
+			end)
+
+			button.MouseLeave:Connect(function()
+				Tween(button,{BackgroundColor3=LiquidUI.Theme.Surface})
+			end)
+
+			button.MouseButton1Click:Connect(function()
+				if item.Callback then
+					task.spawn(item.Callback)
+				end
+			end)
+		end
 	end)
 
 	return self
@@ -961,7 +1307,7 @@ function LiquidUI.Tab:CreateToggle(config)
 				BackgroundColor3 = state
 					and LiquidUI.Theme.Accent
 					or Color3.fromRGB(55,57,65)
-			}):Play()
+			})
 
 			Tween(knob,{
 				Position = state
@@ -970,7 +1316,7 @@ function LiquidUI.Tab:CreateToggle(config)
 				BackgroundColor3 = state
 					and LiquidUI.Theme.White
 					or LiquidUI.Theme.Muted
-			}):Play()
+			})
 		end
 
 		update()
