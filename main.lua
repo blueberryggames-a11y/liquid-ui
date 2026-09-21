@@ -8,7 +8,7 @@ local LocalPlayer = Players.LocalPlayer
 
 local LiquidUI = {}
 LiquidUI.__index = LiquidUI
-LiquidUI.Version = "2.1.0"
+LiquidUI.Version = "2.1.1"
 
 LiquidUI.Theme = {
 	Background = Color3.fromRGB(15,16,20),
@@ -269,20 +269,40 @@ local function createIcon(parent,name,size,color)
 	return image
 end
 
-local function createShadow(parent)
-	local shadow = New("ImageLabel",{
+local function createShadow(parent,cornerRadius)
+	-- Several stacked, increasingly-transparent rounded layers reads as a
+	-- soft feathered drop shadow without depending on a slice-image asset
+	-- rendering correctly (which was showing up as a hard-edged rectangle
+	-- poking out from behind the rounded window).
+	local holder = New("Frame",{
 		Name = "Shadow",
 		BackgroundTransparency = 1,
-		Position = UDim2.fromOffset(-28,-28),
-		Size = UDim2.new(1,56,1,56),
-		Image = "rbxassetid://6014261993",
-		ImageColor3 = Color3.fromRGB(0,0,0),
-		ImageTransparency = .28,
-		ScaleType = Enum.ScaleType.Slice,
-		SliceCenter = Rect.new(49,49,450,450),
+		Position = UDim2.fromOffset(-18,-14),
+		Size = UDim2.new(1,36,1,36),
 		ZIndex = 0
 	},parent)
-	return shadow
+
+	local layers = {
+		{inset=0,  transparency=.90},
+		{inset=4,  transparency=.86},
+		{inset=8,  transparency=.80},
+		{inset=12, transparency=.70},
+	}
+
+	for _,layer in ipairs(layers) do
+		local piece = New("Frame",{
+			AnchorPoint = Vector2.new(.5,.5),
+			Position = UDim2.fromScale(.5,.5),
+			Size = UDim2.new(1,-layer.inset,1,-layer.inset),
+			BackgroundColor3 = Color3.fromRGB(0,0,0),
+			BackgroundTransparency = layer.transparency,
+			BorderSizePixel = 0,
+			ZIndex = 0
+		},holder)
+		Corner(piece,(cornerRadius or 16)+6)
+	end
+
+	return holder
 end
 
 --// ---------------------------------------------------------------------
@@ -334,7 +354,7 @@ function LiquidUI:CreateWindow(config)
 		BackgroundTransparency = 1
 	},self.Gui)
 
-	self.Shadow = createShadow(self.Container)
+	self.Shadow = createShadow(self.Container,16)
 
 	self.Window = New("Frame",{
 		Name = "Window",
