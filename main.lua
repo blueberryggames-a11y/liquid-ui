@@ -8,7 +8,7 @@ local LocalPlayer = Players.LocalPlayer
 
 local LiquidUI = {}
 LiquidUI.__index = LiquidUI
-LiquidUI.Version = "2.1.1"
+LiquidUI.Version = "2.1.2"
 
 LiquidUI.Theme = {
 	Background = Color3.fromRGB(15,16,20),
@@ -277,29 +277,30 @@ local function createShadow(parent,cornerRadius)
 	local holder = New("Frame",{
 		Name = "Shadow",
 		BackgroundTransparency = 1,
-		Position = UDim2.fromOffset(-18,-14),
-		Size = UDim2.new(1,36,1,36),
+		Position = UDim2.fromOffset(-26,-18),
+		Size = UDim2.new(1,52,1,52),
 		ZIndex = 0
 	},parent)
 
 	local layers = {
-		{inset=0,  transparency=.90},
-		{inset=4,  transparency=.86},
-		{inset=8,  transparency=.80},
-		{inset=12, transparency=.70},
+		{inset=0,  transparency=.93},
+		{inset=6,  transparency=.86},
+		{inset=12, transparency=.76},
+		{inset=18, transparency=.62},
+		{inset=24, transparency=.42},
 	}
 
 	for _,layer in ipairs(layers) do
 		local piece = New("Frame",{
 			AnchorPoint = Vector2.new(.5,.5),
-			Position = UDim2.fromScale(.5,.5),
+			Position = UDim2.fromScale(.5,.52),
 			Size = UDim2.new(1,-layer.inset,1,-layer.inset),
 			BackgroundColor3 = Color3.fromRGB(0,0,0),
 			BackgroundTransparency = layer.transparency,
 			BorderSizePixel = 0,
 			ZIndex = 0
 		},holder)
-		Corner(piece,(cornerRadius or 16)+6)
+		Corner(piece,(cornerRadius or 16)+8)
 	end
 
 	return holder
